@@ -80,6 +80,14 @@
   .sess input[type=time]{width:96px;flex:0 0 96px;padding:7px 8px}
   .sess .arr{color:var(--muted);font-size:13px}
   .sess-cell{font-size:13px;line-height:1.7;white-space:nowrap}
+  .range-btn{padding:4px 10px;font-size:12px;border:1px solid var(--border);background:#fff;color:var(--text);
+    border-radius:6px;cursor:pointer}
+  .range-btn:hover{border-color:var(--primary);color:var(--primary)}
+  .range-btn.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .range-btn.primary:hover{opacity:.92}
+  .range-select{padding:4px 8px;font-size:12px;border:1px solid var(--border);background:#fff;
+    color:var(--text);border-radius:6px}
+  .list-filter{margin:0 0 10px;font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   @media(max-width:480px){
     .stats{grid-template-columns:1fr 1fr}
     .stat .value{font-size:18px}
@@ -118,7 +126,9 @@
   </div>
 
   <div class="card">
-    <h2>统计</h2>
+    <h2>统计
+      <span class="range-toolbar" id="rangeToolbar" style="font-weight:normal;font-size:13px;color:var(--muted);margin-left:12px;display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;vertical-align:middle;"></span>
+    </h2>
     <div class="stats">
       <div class="stat daily">
         <div class="label">当日工时</div>
@@ -158,6 +168,7 @@
 
   <div class="card">
     <h2>打卡记录</h2>
+    <div class="list-filter" id="listFilter"></div>
     <div class="scroll">
       <table>
         <thead>
@@ -310,14 +321,201 @@
     persist(records);
   }
 
+  // ========== 查看范围 ==========
+  var viewState={
+    // mode: 'current'=看当前年月，'custom'=选了别的月份或周
+    mode:'current',
+    month:null,    // Date 对象：选中月（年月日都是月初或随便某天都行，用年月）
+    weekAnchor:null, // Date 对象：选中周（周一到周日范围内的任意一天）
+    listScope:'month'  // 记录列表显示：'month' | 'week' | 'all'
+  };
+  function setViewMonth(date){
+    viewState.mode='custom';
+    viewState.month=new Date(date.getFullYear(),date.getMonth(),1);
+    viewState.weekAnchor=null;
+    render();
+  }
+  function setViewWeek(date){
+    viewState.mode='custom';
+    viewState.weekAnchor=new Date(date);
+    var wr=weekRange(date); viewState.weekAnchor=wr.start;
+    // 周对应的月份：取一周的周六或周初所在的月，用于月份切换
+    viewState.month=new Date(wr.end.getFullYear(),wr.end.getMonth(),1);
+    render();
+  }
+  function resetView(){
+    viewState.mode='current';
+    viewState.month=null;
+    viewState.weekAnchor=null;
+    render();
+  }
+  function addMonths(d,n){var x=new Date(d); x.setDate(1); x.setMonth(x.getMonth()+n); return x;}
+
+  function renderToolbar(){
+    var tb=$("rangeToolbar"); tb.innerHTML="";
+    var now=new Date();
+    var cur=new Date(now.getFullYear(),now.getMonth(),1);
+    var anchor=(viewState.mode==='custom' && viewState.month)? viewState.month : cur;
+    var y=anchor.getFullYear(), m=anchor.getMonth();
+    var title=y+" 年 "+(m+1)+" 月";
+    var isCur=!(viewState.mode==='custom');
+
+    var prev=document.createElement("button"); prev.className="range-btn"; prev.textContent="◀";
+    prev.title="上一个月"; prev.onclick=function(){setViewMonth(addMonths(anchor,-1));};
+    var next=document.createElement("button"); next.className="range-btn"; next.textContent="▶";
+    next.title="下一个月"; next.onclick=function(){setViewMonth(addMonths(anchor,1));};
+    var lab=document.createElement("span"); lab.textContent=title; lab.style.fontWeight=600; lab.style.color="var(--text)";
+
+    // 月份下拉：从所有记录最早月到当前月
+    var sel=document.createElement("select"); sel.className="range-select";
+    var records=load();
+    var months={};
+    records.forEach(function(r){
+      var d=new Date(r.date+"T00:00:00"); var k=d.getFullYear()+"-"+d.getMonth();
+      months[k]=new Date(d.getFullYear(),d.getMonth(),1);
+    });
+    // 保证至少含当前月
+    months[now.getFullYear()+"-"+now.getMonth()]=cur;
+    var arr=Object.values(months).sort(function(a,b){return b-a;});
+    arr.forEach(function(d){
+      var opt=document.createElement("option");
+      opt.value=d.getFullYear()+"-"+d.getMonth();
+      opt.textContent=d.getFullYear()+" 年 "+(d.getMonth()+1)+" 月";
+      if(d.getFullYear()===y && d.getMonth()===m) opt.selected=true;
+      sel.appendChild(opt);
+    });
+    sel.onchange=function(){
+      var p=sel.value.split("-"); setViewMonth(new Date(+p[0],+p[1],1));
+    };
+
+    // 周下拉：选中月份内的各周（以周一为锚点）
+    var wsel=document.createElement("select"); wsel.className="range-select";
+    var firstDay=new Date(y,m,1);
+    var lastDay=new Date(y,m+1,0);
+    var wrFirst=weekRange(firstDay); // 本月第一天所在的周（可能上月）
+    var wrLast=weekRange(lastDay);   // 本月最后一天所在的周（可能下月）
+    var weeks=[];
+    var cursor=new Date(wrFirst.start);
+    while(cursor<=wrLast.end){
+      weeks.push(new Date(cursor));
+      cursor=new Date(cursor.getTime()+7*86400000);
+    }
+    var curWeek=weekRange(now).start;
+    var viewWeekStart=viewState.weekAnchor? weekRange(viewState.weekAnchor).start : null;
+    var wEmpty=document.createElement("option");
+    wEmpty.value=""; wEmpty.textContent="选择周（在本月内）";
+    if(!viewWeekStart) wEmpty.selected=true;
+    wsel.appendChild(wEmpty);
+    weeks.forEach(function(wMon){
+      var opt=document.createElement("option");
+      var wEnd=new Date(wMon.getTime()+6*86400000);
+      var label=(wMon.getMonth()+1)+"/"+wMon.getDate()+" - "+(wEnd.getMonth()+1)+"/"+wEnd.getDate();
+      opt.value=wMon.toISOString().slice(0,10);
+      opt.textContent=label+"  (周"+
+        (wMon.getFullYear()===curWeek.getFullYear() && +wMon===+curWeek?"本周":"")+")";
+      if(viewWeekStart && +wMon===+viewWeekStart) opt.selected=true;
+      wsel.appendChild(opt);
+    });
+    wsel.onchange=function(){
+      if(!wsel.value){ // 回到月视图
+        setViewMonth(anchor);
+      }else{
+        setViewWeek(new Date(wsel.value+"T00:00:00"));
+      }
+    };
+
+    var today=document.createElement("button");
+    today.className="range-btn primary"; today.textContent="回到本月";
+    today.title="回到当前本月/本周";
+    today.onclick=resetView;
+
+    tb.appendChild(prev); tb.appendChild(lab); tb.appendChild(next);
+    tb.appendChild(sel); tb.appendChild(wsel); tb.appendChild(today);
+  }
+
+  function computeMonthStats(records, anchor){
+    var y=anchor.getFullYear(), m=anchor.getMonth();
+    var workdays=workdaysInMonth(y,m);
+    var stdMonth=workdays*8;
+    var otTarget=Math.round(stdMonth*0.25*10)/10;
+    var totalTarget=stdMonth+otTarget;
+    var mr=monthRange(anchor);
+    var monthRec=records.filter(function(r){var d=new Date(r.date+"T00:00:00"); return d>=mr.start&&d<=mr.end;});
+    var mH=monthRec.reduce(function(s,r){return s+dayHours(r)},0);
+    var mwnRec=monthRec.filter(function(r){return !isWeekend(r.date)});
+    var mwnH=mwnRec.reduce(function(s,r){return s+dayHours(r)},0);
+    var wkndRec=monthRec.filter(function(r){return isWeekend(r.date)});
+    var weH=wkndRec.reduce(function(s,r){return s+dayHours(r)},0);
+    var weDelta=WE_TARGET-weH;
+    return {
+      records:monthRec, workdays:workdays,
+      stdMonth:stdMonth, otTarget:otTarget, totalTarget:totalTarget,
+      hours:mH, avgHours:mwnRec.length?(mwnH/mwnRec.length):0, mwnDays:mwnRec.length,
+      weekendHours:weH, weDelta:weDelta, weTarget:WE_TARGET,
+      gap:totalTarget-mH
+    };
+  }
+  function computeWeekStats(records, anchor){
+    var wr=weekRange(anchor);
+    var weekRec=records.filter(function(r){var d=new Date(r.date+"T00:00:00"); return d>=wr.start&&d<=wr.end;});
+    var wH=weekRec.reduce(function(s,r){return s+dayHours(r)},0);
+    var wknRec=weekRec.filter(function(r){return !isWeekend(r.date)});
+    var wknH=wknRec.reduce(function(s,r){return s+dayHours(r)},0);
+    return {records:weekRec, wr:wr, hours:wH,
+      avgHours:wknRec.length?(wknH/wknRec.length):0, wkDays:wknRec.length,
+      stdHours:weekRec.length*STD};
+  }
+
+  function renderListFilter(records, visibleCount, totalCount){
+    var f=$("listFilter"); f.innerHTML="";
+    var tip;
+    if(viewState.listScope==='all') tip="显示全部 "+totalCount+" 条记录";
+    else if(viewState.listScope==='week' && viewState.weekAnchor){
+      var wr=weekRange(viewState.weekAnchor);
+      tip="显示当周 "+fmtDate(wr.start)+" 至 "+fmtDate(wr.end)+" 的 "+visibleCount+" 条";
+    }else{
+      var m=viewState.month || new Date();
+      tip="显示 "+m.getFullYear()+"-"+pad(m.getMonth()+1)+" 的 "+visibleCount+" 条";
+    }
+    var lab=document.createElement("span"); lab.textContent=tip;
+    f.appendChild(lab);
+
+    var mk=function(text,scope,active){
+      var b=document.createElement("button"); b.className="range-btn"+(active?" primary":"");
+      b.textContent=text;
+      b.onclick=function(){viewState.listScope=scope;render();};
+      return b;
+    };
+    f.appendChild(mk("按本月/所选月","month", viewState.listScope==='month'));
+    f.appendChild(mk("按所选周","week", viewState.listScope==='week'));
+    f.appendChild(mk("显示全部","all", viewState.listScope==='all'));
+  }
+
+  function filterRecordsByListScope(records){
+    var anchorMonth=viewState.month || new Date();
+    if(viewState.listScope==='all') return records;
+    if(viewState.listScope==='week' && viewState.weekAnchor){
+      var wr=weekRange(viewState.weekAnchor);
+      return records.filter(function(r){var d=new Date(r.date+"T00:00:00"); return d>=wr.start&&d<=wr.end;});
+    }
+    // month
+    var mr=monthRange(anchorMonth);
+    return records.filter(function(r){var d=new Date(r.date+"T00:00:00"); return d>=mr.start&&d<=mr.end;});
+  }
+
   function render(){
-    var records=load().sort(function(a,b){return a.date<b.date?1:a.date>b.date?-1:0});
+    renderToolbar();
+    var allRecords=load().sort(function(a,b){return a.date<b.date?1:a.date>b.date?-1:0});
+    var visibleRec=filterRecordsByListScope(allRecords);
+    var totalCount=allRecords.length;
+
     var list=$("list"); list.innerHTML="";
     var empty=$("empty");
-    if(records.length===0){empty.classList.remove("hidden")}
-    else{empty.classList.add("hidden")}
+    if(visibleRec.length===0){empty.classList.remove("hidden");
+      empty.textContent=(viewState.listScope==='all')?"暂无记录，先在上方点一次「现在上班」吧":"这个范围没有打卡记录";
+    }else{empty.classList.add("hidden")}
 
-    records.forEach(function(r){
+    visibleRec.forEach(function(r){
       var wkd=isWeekend(r.date);
       var h=dayHours(r);
       var ot=dayOvertime(r);
@@ -339,69 +537,86 @@
       };
     });
 
-    // 当日
+    renderListFilter(allRecords, visibleRec.length, totalCount);
+
+    // ========== 统计 ==========
+    var now=new Date();
+    var monthAnchor=(viewState.mode==='custom' && viewState.month)? viewState.month : now;
+    var weekAnchor=(viewState.mode==='custom' && viewState.weekAnchor)? viewState.weekAnchor : now;
+
+    // 当日：永远显示当天（若选中的是具体日就显示具体，否则今天）
     var today=todayStr();
-    var todayRec=records.filter(function(r){return r.date===today});
+    var todayRec=allRecords.filter(function(r){return r.date===today});
     var dH=todayRec.reduce(function(s,r){return s+dayHours(r)},0);
     $("dDay").textContent=dH.toFixed(1);
     $("dDaySub").textContent=todayRec.length?new Date(today+"T00:00:00").toLocaleDateString("zh-CN",{month:"long",day:"numeric",weekday:"long"}):"今天未打卡";
 
-    var now=new Date();
-    var y=now.getFullYear(),m=now.getMonth();
-    var workdays=workdaysInMonth(y,m);
-    var stdMonth=workdays*8;
-    var otTarget=Math.round(stdMonth*0.25*10)/10;
-    var totalTarget=stdMonth+otTarget;
+    var m=computeMonthStats(allRecords, monthAnchor);
+    var w=computeWeekStats(allRecords, weekAnchor);
+
+    // 判断是不是当前真实月/周，用于进度条与预警
+    var isRealMonth=(function(){
+      var n=new Date(); return monthAnchor.getFullYear()===n.getFullYear() && monthAnchor.getMonth()===n.getMonth();
+    })();
+    var isRealWeek=(function(){
+      var a=weekRange(weekAnchor).start, b=weekRange(new Date()).start;
+      return +a===+b;
+    })();
+
+    var isCustomMonth=(viewState.mode==='custom');
+    var labelMonthTitle=isRealMonth?"本月工时":(monthAnchor.getFullYear()+"."+pad(monthAnchor.getMonth()+1)+" 工时");
+    var labelMonthAvgTitle=isRealMonth?"本月平均工时":(monthAnchor.getFullYear()+"."+pad(monthAnchor.getMonth()+1)+" 平均");
+    var labelMonthWeekend=isRealMonth?"本月周末加班":(monthAnchor.getFullYear()+"."+pad(monthAnchor.getMonth()+1)+" 周末加班");
+    var labelWeekTitle=isRealWeek?"本周工时":(w.wr.start.getFullYear()+"."+pad(w.wr.start.getMonth()+1)+"."+pad(w.wr.start.getDate())+" 起 周工时");
+    var labelWeekAvgTitle=isRealWeek?"本周平均工时":(w.wr.start.getFullYear()+"."+pad(w.wr.start.getMonth()+1)+"."+pad(w.wr.start.getDate())+" 起 周平均");
 
     // 周
-    var wr=weekRange(now);
-    var weekRec=records.filter(function(r){var d=new Date(r.date+"T00:00:00"); return d>=wr.start&&d<=wr.end;});
-    var wH=weekRec.reduce(function(s,r){return s+dayHours(r)},0);
-    var wStd=weekRec.length*STD;
-    $("dWeek").textContent=wH.toFixed(1);
-    $("dWeekSub").textContent=weekRec.length?weekRec.length+"天打卡 / 标准 "+wStd+"h":wr.start.toLocaleDateString("zh-CN",{month:"numeric",day:"numeric"})+" 起";
-    $("dWeekBar").style.width=Math.min(100,wStd?wH/wStd*100:0)+"%";
-    var wknRec=weekRec.filter(function(r){return !isWeekend(r.date)});
-    var wknH=wknRec.reduce(function(s,r){return s+dayHours(r)},0);
-    $("dWeekAvg").textContent=wknRec.length?(wknH/wknRec.length).toFixed(1):"0.0";
-    $("dWeekAvgSub").textContent=wknRec.length?wknRec.length+"个工作日 / 平均每天 "+(wknH/wknRec.length).toFixed(1)+"h":"本周未打卡";
+    $("dWeek").textContent=w.hours.toFixed(1);
+    $("dWeekSub").textContent=w.records.length?(w.records.length+"天打卡 / 标准 "+w.stdHours+"h"):
+      w.wr.start.toLocaleDateString("zh-CN",{month:"numeric",day:"numeric"})+" 起（本周/所选周无打卡）";
+    $("dWeekBar").style.width=Math.min(100,w.stdHours?w.hours/w.stdHours*100:0)+"%";
+    $("dWeekAvg").textContent=w.wkDays?(w.avgHours).toFixed(1):"0.0";
+    $("dWeekAvgSub").textContent=w.wkDays?w.wkDays+"个工作日 / 平均每天 "+w.avgHours.toFixed(1)+"h":
+      "本周/所选周未打卡";
+    // 改标签（动态替换 DOM text，保留 value/sub/progress）
+    $("dWeek").previousElementSibling.textContent=labelWeekTitle;
+    $("dWeekAvg").previousElementSibling.textContent=labelWeekAvgTitle;
 
     // 月
-    var mr=monthRange(now);
-    var monthRec=records.filter(function(r){var d=new Date(r.date+"T00:00:00"); return d>=mr.start&&d<=mr.end;});
-    var mH=monthRec.reduce(function(s,r){return s+dayHours(r)},0);
-    var mDelta=totalTarget-mH;
-    $("dMonth").textContent=mH.toFixed(1);
-    $("dMonthSub").textContent="目标 "+totalTarget.toFixed(1)+"h（标准"+stdMonth+"+加班"+otTarget+"），"+(mDelta>0?"还差 "+mDelta.toFixed(1)+"h":"已超 "+(-mDelta).toFixed(1)+"h");
-    $("dMonthBar").style.width=Math.min(100,mH/totalTarget*100)+"%";
-    var mwnRec=monthRec.filter(function(r){return !isWeekend(r.date)});
-    var mwnH=mwnRec.reduce(function(s,r){return s+dayHours(r)},0);
-    $("dMonthAvg").textContent=mwnRec.length?(mwnH/mwnRec.length).toFixed(1):"0.0";
-    $("dMonthAvgSub").textContent=mwnRec.length?mwnRec.length+"个工作日 / 平均每天 "+(mwnH/mwnRec.length).toFixed(1)+"h":"本月未打卡";
+    var mDelta=m.gap;
+    $("dMonth").textContent=m.hours.toFixed(1);
+    $("dMonthSub").textContent="目标 "+m.totalTarget.toFixed(1)+"h（标准"+m.stdMonth+"+加班"+m.otTarget+"），"+
+      (mDelta>0?"还差 "+mDelta.toFixed(1)+"h":"已超 "+(-mDelta).toFixed(1)+"h");
+    $("dMonthBar").style.width=Math.min(100,m.totalTarget?m.hours/m.totalTarget*100:0)+"%";
+    $("dMonthAvg").textContent=m.mwnDays?(m.avgHours).toFixed(1):"0.0";
+    $("dMonthAvgSub").textContent=m.mwnDays?m.mwnDays+"个工作日 / 平均每天 "+m.avgHours.toFixed(1)+"h":
+      "本月/所选月未打卡";
+    $("dMonth").previousElementSibling.textContent=labelMonthTitle;
+    $("dMonthAvg").previousElementSibling.textContent=labelMonthAvgTitle;
 
     // 周末加班
-    var wkndRec=monthRec.filter(function(r){return isWeekend(r.date)});
-    var weH=wkndRec.reduce(function(s,r){return s+dayHours(r)},0);
-    var weDelta=WE_TARGET-weH;
-    $("dWeekend").textContent=weH.toFixed(1);
-    $("dWeekendSub").textContent="目标 "+WE_TARGET+"h，"+(weDelta>0?"还差 "+weDelta.toFixed(1)+"h":"已达目标");
-    $("dWeekendBar").style.width=Math.min(100,weH/WE_TARGET*100)+"%";
+    $("dWeekend").textContent=m.weekendHours.toFixed(1);
+    $("dWeekendSub").textContent="目标 "+m.weTarget+"h，"+(m.weDelta>0?"还差 "+m.weDelta.toFixed(1)+"h":"已达目标");
+    $("dWeekendBar").style.width=Math.min(100,m.weekendHours/m.weTarget*100)+"%";
+    $("dWeekend").previousElementSibling.textContent=labelMonthWeekend;
 
-    // 最后一周预警
-    var remWd=remainingWorkdays(now);
-    var projected=mH+remWd*STD;
+    // 最后一周预警（只在真实本月触发，历史月不显示）
     var warnCard=$("warnCard");
-    if(inLastWeekOfMonth(now)&&projected<totalTarget){
-      var gap=(totalTarget-projected).toFixed(1);
-      $("warnBody").innerHTML=
-        "本月标准 <b>"+stdMonth+"h</b> + 加班目标 <b>"+otTarget+"h</b> = 应达 <b>"+totalTarget.toFixed(1)+"h</b>。<br>"+
-        "当前已累计 <b>"+mH.toFixed(1)+"h</b>，剩余 <b>"+remWd+"</b> 个工作日，按 8h/天预估可达 <b>"+projected.toFixed(1)+"h</b>，"+
-        "仍差 <b>"+gap+"h</b>，请安排加班补足。"+
-        (weDelta>0?"<br>周末加班还差 <b>"+weDelta.toFixed(1)+"h</b>（目标 "+WE_TARGET+"h）。":"");
-      warnCard.classList.remove("hidden");
-    }else{
-      warnCard.classList.add("hidden");
+    if(isRealMonth && inLastWeekOfMonth(now)){
+      var remWd=remainingWorkdays(now);
+      var projected=m.hours+remWd*STD;
+      if(projected<m.totalTarget){
+        var gap=(m.totalTarget-projected).toFixed(1);
+        $("warnBody").innerHTML=
+          "本月标准 <b>"+m.stdMonth+"h</b> + 加班目标 <b>"+m.otTarget+"h</b> = 应达 <b>"+m.totalTarget.toFixed(1)+"h</b>。<br>"+
+          "当前已累计 <b>"+m.hours.toFixed(1)+"h</b>，剩余 <b>"+remWd+"</b> 个工作日，按 8h/天预估可达 <b>"+projected.toFixed(1)+"h</b>，"+
+          "仍差 <b>"+gap+"h</b>，请安排加班补足。"+
+          (m.weDelta>0?"<br>周末加班还差 <b>"+m.weDelta.toFixed(1)+"h</b>（目标 "+m.weTarget+"h）。":"");
+        warnCard.classList.remove("hidden");
+        return;
+      }
     }
+    warnCard.classList.add("hidden");
   }
 
   // 保存（手动编辑后）
