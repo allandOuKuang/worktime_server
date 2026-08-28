@@ -1,0 +1,30 @@
+/*
+  Access-Control-Allow-Origin: *
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+
+  # 禁用任何默认的密码保护或重定向
+  Basic-Auth: false
+  # 确保是公开的
+  X-Robots-Tag: index, nofollow
+
+/manifest.json
+  Content-Type: application/manifest+json
+  Access-Control-Allow-Origin: *
+
+/widget-manifest.json
+  Content-Type: application/manifest+json
+  Access-Control-Allow-Origin: *
+
+/sw.js
+  Content-Type: application/javascript
+  Access-Control-Allow-Origin: *
+
+/*.png
+  Content-Type: image/png
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=86400
+
+/*.html
+  Content-Type: text/html; charset=utf-8
+  Access-Control-Allow-Origin: *

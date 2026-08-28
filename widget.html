@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工时·小组件</title>
+<link rel="manifest" href="./widget-manifest.json">
+<meta name="theme-color" content="#4f46e5">
+<link rel="icon" href="app-icon.png">
+<style>
+  :root{
+    --primary:#4f46e5; --primary-2:#6366f1; --bg:#f5f7fb;
+    --text:#1f2937; --muted:#6b7280; --border:#e5e7eb;
+    --green:#10b981; --red:#ef4444;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:linear-gradient(135deg,var(--primary),var(--primary-2));
+    color:#fff;display:flex;flex-direction:column;align-items:center;
+    padding:18px 16px;min-height:100%;text-align:center;user-select:none}
+  .clock{font-size:42px;font-weight:700;letter-spacing:1px;font-variant-numeric:tabular-nums;line-height:1.1}
+  .date{font-size:12px;opacity:.85;margin-top:2px}
+  .today{margin-top:14px;background:rgba(255,255,255,.15);border-radius:12px;padding:10px 14px;width:100%}
+  .today .lab{font-size:11px;opacity:.85;text-transform:uppercase;letter-spacing:.5px}
+  .today .val{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+  .today .sub{font-size:11px;opacity:.85;margin-top:2px;min-height:14px}
+  .btns{display:flex;gap:10px;margin-top:16px;width:100%}
+  .punch{flex:1;border:none;border-radius:12px;padding:16px 0;font-size:16px;font-weight:700;
+    cursor:pointer;color:#fff;transition:filter .15s,transform .08s}
+  .punch:active{transform:scale(.97)}
+  .punch.in{background:rgba(255,255,255,.22)}
+  .punch.out{background:rgba(0,0,0,.18)}
+  .punch:disabled{opacity:.4;cursor:not-allowed}
+  .log{margin-top:14px;width:100%;background:rgba(0,0,0,.12);border-radius:10px;padding:8px 10px;
+    font-size:12px;line-height:1.6;min-height:48px;max-height:96px;overflow:auto;text-align:left}
+  .log .row{display:flex;justify-content:space-between;gap:8px}
+  .log .row span:first-child{opacity:.85}
+  .log .empty{opacity:.6;text-align:center}
+  .foot{margin-top:12px;font-size:11px;opacity:.8}
+  .foot a{color:#fff;text-decoration:underline;cursor:pointer}
+  .toast{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);
+    color:#fff;padding:7px 14px;border-radius:8px;font-size:12px;opacity:0;transition:opacity .25s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+  <div class="clock" id="clk">--:--:--</div>
+  <div class="date" id="dte">—</div>
+
+  <div class="today">
+    <div class="lab">今日工时</div>
+    <div class="val" id="th">0.0h</div>
+    <div class="sub" id="ts">未打卡</div>
+  </div>
+
+  <div class="btns">
+    <button class="punch in" id="bIn">上班</button>
+    <button class="punch out" id="bOut">下班</button>
+  </div>
+
+  <div class="log" id="log"><div class="empty">暂无记录</div></div>
+
+  <div class="foot"><a id="openFull">打开完整版 →</a></div>
+  <div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+  var KEY="work_hours_records_v1";
+  var STD=8;
+  var LUNCH_START=12*60, LUNCH_END=13*60+15;
+  var $=function(id){return document.getElementById(id)};
+
+  function load(){
+    try{
+      var data=JSON.parse(localStorage.getItem(KEY)||"[]");
+      data.forEach(function(r){
+        if(!r.sessions){ r.sessions=[]; if(r.start&&r.end) r.sessions.push({in:r.start,out:r.end}); delete r.start; delete r.end; }
+        if(!Array.isArray(r.sessions)) r.sessions=[];
+        r.sessions=r.sessions.filter(function(s){return s&&(s.in||s.out);});
+      });
+      return data;
+    }catch(e){return[]}
+  }
+  function write(r){ localStorage.setItem(KEY,JSON.stringify(r)); render(); }
+  function pad(n){return n<10?"0"+n:""+n}
+  function fmtDate(d){return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())}
+  function todayStr(){return fmtDate(new Date())}
+  function nowTime(){var d=new Date();return pad(d.getHours())+":"+pad(d.getMinutes())}
+  function toMin(t){var p=(t||"0:0").split(":");return parseInt(p[0],10)*60+parseInt(p[1],10)}
+  function isWeekend(ds){var w=new Date(ds+"T00:00:00").getDay();return w===0||w===6}
+  function sessionRaw(s){if(!s||!s.in||!s.out)return 0;var a=toMin(s.in),b=toMin(s.out);if(b<a)b+=1440;return(b-a)/60;}
+  function lunchOverlap(s){if(!s||!s.in||!s.out)return 0;var a=toMin(s.in),b=toMin(s.out);if(b<a)b+=1440;var ov=Math.min(b,LUNCH_END)-Math.max(a,LUNCH_START);return ov>0?ov/60:0;}
+  function dayHours(rec){
+    var raw=(rec.sessions||[]).reduce(function(s,x){return s+sessionRaw(x)},0);
+    if(isWeekend(rec.date)) return raw;
+    var lunch=Math.min(1.25,(rec.sessions||[]).reduce(function(s,x){return s+lunchOverlap(x)},0));
+    return raw-lunch;
+  }
+  function toast(msg){var t=$("toast");t.textContent=msg;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},1500)}
+
+  function todayRec(){
+    var t=todayStr();
+    var rec=load().filter(function(r){return r.date===t})[0];
+    return rec||{date:t,sessions:[]};
+  }
+  function upsert(rec){
+    var records=load().filter(function(r){return r.date!==rec.date});
+    records.push(rec);
+    write(records);
+  }
+
+  function render(){
+    var rec=todayRec();
+    var h=dayHours(rec);
+    $("th").textContent=h.toFixed(1)+"h";
+    // 进行中时段？
+    var openIdx=-1;
+    rec.sessions.forEach(function(s,i){ if(s.in&&!s.out) openIdx=i; });
+    $("ts").textContent = rec.sessions.length===0 ? "未打卡"
+      : openIdx>=0 ? "进行中："+rec.sessions[openIdx].in+" 起"
+      : "共 "+rec.sessions.length+" 个时段";
+    // 按钮状态
+    $("bIn").disabled = (openIdx>=0);
+    $("bOut").disabled = (openIdx<0);
+    // 记录列表
+    var log=$("log");
+    if(rec.sessions.length===0){ log.innerHTML='<div class="empty">暂无记录</div>'; return; }
+    log.innerHTML="";
+    rec.sessions.forEach(function(s,i){
+      var row=document.createElement("div"); row.className="row";
+      row.innerHTML='<span>时段'+(i+1)+'</span><span>'+(s.in||"—")+' → '+(s.out||"进行中…")+'</span>';
+      log.appendChild(row);
+    });
+  }
+
+  // 上班：新增一个时段
+  $("bIn").onclick=function(){
+    var rec=todayRec();
+    var last=rec.sessions[rec.sessions.length-1];
+    if(last && last.in && !last.out){toast("先下班再上班");return}
+    rec.sessions.push({in:nowTime(),out:""});
+    upsert(rec);
+    toast("上班 "+nowTime());
+  };
+  // 下班：关闭进行中时段
+  $("bOut").onclick=function(){
+    var rec=todayRec();
+    var last=null;
+    for(var i=rec.sessions.length-1;i>=0;i--){ if(rec.sessions[i].in&&!rec.sessions[i].out){last=rec.sessions[i];break} }
+    if(!last){toast("没有进行中的时段");return}
+    last.out=nowTime();
+    upsert(rec);
+    toast("下班 "+nowTime());
+  };
+  $("openFull").onclick=function(){
+    // 若主窗口已开则聚焦，否则打开
+    if(window.opener && !window.opener.closed){ window.opener.focus(); }
+    else { window.open('/index.html','whMain'); }
+  };
+
+  // 实时时钟
+  function tick(){
+    var d=new Date();
+    $("clk").textContent=pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds());
+    $("dte").textContent=d.toLocaleDateString("zh-CN",{month:"long",day:"numeric",weekday:"long"});
+  }
+  setInterval(tick,1000); tick();
+
+  // 跨窗口同步
+  window.addEventListener("storage",function(e){ if(e.key===KEY) render(); });
+
+  render();
+})();
+</script>
+<script>
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', function(){ navigator.serviceWorker.register('./sw.js').catch(function(){}); });
+  }
+</script>
+</body>
+</html>
