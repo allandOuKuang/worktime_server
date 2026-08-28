@@ -167,7 +167,13 @@
   </div>
 
   <div class="card">
-    <h2>打卡记录</h2>
+    <h2>打卡记录
+      <span style="margin-left:auto;font-size:13px;font-weight:normal;display:inline-flex;gap:6px;align-items:center;vertical-align:middle;">
+        <button id="btnExport" class="range-btn" type="button">导出</button>
+        <button id="btnImport" class="range-btn" type="button">导入备份</button>
+        <input type="file" id="importFile" accept="application/json,.json" style="display:none">
+      </span>
+    </h2>
     <div class="list-filter" id="listFilter"></div>
     <div class="scroll">
       <table>
@@ -664,6 +670,126 @@
   $("date").onchange=function(){
     var date=$("date").value; if(!date)return;
     loadEditing(date);
+  };
+
+  // ========== 导出 / 导入 ==========
+  function downloadBlob(blob, filename){
+    var a=document.createElement("a");
+    var url=URL.createObjectURL(blob);
+    a.href=url; a.download=filename; a.style.display="none";
+    document.body.appendChild(a);
+    setTimeout(function(){ a.click(); },10);
+    setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 5000);
+  }
+  function csvEsc(s){
+    if(s==null) return "";
+    s=""+s;
+    if(s.indexOf(",")>=0 || s.indexOf('"')>=0 || s.indexOf("\n")>=0){
+      s='"'+s.replace(/"/g,'""')+'"';
+    }
+    return s;
+  }
+  function exportCSV(visibleOnly){
+    var all=load().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0});
+    var rows=visibleOnly? filterRecordsByListScope(all) : all;
+    if(rows.length===0){toast("没有可导出的记录");return}
+    var head=["日期","星期","类型","上班","下班","工时(h)","加班(h)","午休扣除(h)","备注"];
+    var lines=[head.map(csvEsc).join(",")];
+    rows.forEach(function(r){
+      var d=new Date(r.date+"T00:00:00");
+      var wd=["周日","周一","周二","周三","周四","周五","周六"][d.getDay()];
+      var wkd=isWeekend(r.date);
+      var totalH=dayHours(r);
+      var otH=dayOvertime(r);
+      var lunchH=wkd?0:Math.min(1.25,(r.sessions||[]).reduce(function(s,x){return s+lunchOverlap(x)},0));
+      var sess=(r.sessions||[]).slice(); if(sess.length===0) sess=[{in:null,out:null}];
+      sess.forEach(function(s,i){
+        lines.push([
+          r.date,
+          wd,
+          i===0?(wkd?"周末":"工作日"):"",
+          csvEsc(s.in||""),
+          csvEsc(s.out||""),
+          i===0? totalH.toFixed(2):"",
+          i===0? otH.toFixed(2):"",
+          i===0? lunchH.toFixed(2):"",
+          ""
+        ].map(csvEsc).join(","));
+      });
+    });
+    var csv="\uFEFF"+lines.join("\r\n"); // BOM => Excel 中文不乱码
+    var blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+    var scope=viewState.listScope==='all'?"全部":(viewState.listScope==='week'?"周":"月");
+    var tag=new Date();
+    var name="工时-"+scope+"-"+tag.getFullYear()+pad(tag.getMonth()+1)+pad(tag.getDate())+".csv";
+    downloadBlob(blob,name);
+    toast("已导出 CSV（"+rows.length+" 天）");
+  }
+  function exportJSONBackup(){
+    var all=load();
+    var obj={
+      app:"Work Time Cus",
+      version:1,
+      exportedAt:new Date().toISOString(),
+      count:all.length,
+      records:all
+    };
+    var json=JSON.stringify(obj,null,2);
+    var blob=new Blob([json],{type:"application/json;charset=utf-8"});
+    var t=new Date();
+    var name="工时备份-"+t.getFullYear()+pad(t.getMonth()+1)+pad(t.getDate())+".json";
+    downloadBlob(blob,name);
+    toast("已导出 JSON 备份（"+all.length+" 条）");
+  }
+  function askExportType(){
+    var scope=viewState.listScope==='all'?"全部":(viewState.listScope==='week'?"周":"月");
+    var msg="CSV（Excel打开，按当前显示范围："+scope+"）\n"
+           +"或\n"
+           +"JSON（完整备份，用于换手机/重装后导入恢复）\n\n"
+           +"确定要导出"+scope+"的 CSV 吗？\n（点取消会改导出 JSON 备份）";
+    if(confirm(msg)){
+      exportCSV(true);
+    }else{
+      if(confirm("改为导出 JSON 备份（所有记录）？")){
+        exportJSONBackup();
+      }
+    }
+  }
+  function importJSON(file){
+    if(!file)return;
+    var reader=new FileReader();
+    reader.onload=function(){
+      try{
+        var obj=JSON.parse(reader.result||"");
+        if(!obj || !Array.isArray(obj.records)) throw new Error("文件格式不对");
+        var old=load();
+        var byDate={};
+        old.concat(obj.records).forEach(function(r){
+          if(!r || !r.date) return;
+          if(!byDate[r.date]) byDate[r.date]={date:r.date, sessions:[]};
+          var sess=(r.sessions&&Array.isArray(r.sessions))?r.sessions:
+            ((r.start||r.end)?[{in:r.start||null,out:r.end||null}]:[]);
+          byDate[r.date].sessions=byDate[r.date].sessions.concat(sess);
+        });
+        var merged=Object.values(byDate).filter(function(x){return x.sessions && x.sessions.length});
+        if(merged.length===0){toast("文件里没有有效记录");return}
+        if(!confirm("导入完成后共 "+merged.length+" 天记录（合并现有+文件中，同日合并）。确定覆盖？")) return;
+        localStorage.setItem(KEY,JSON.stringify(merged));
+        render();
+        if(editing.date) loadEditing(editing.date);
+        toast("已导入 "+obj.records.length+" 条，合并后 "+merged.length+" 天");
+      }catch(e){
+        alert("导入失败："+(e.message||e));
+      }
+    };
+    reader.readAsText(file,"utf-8");
+  }
+  $("btnExport").onclick=askExportType;
+  $("btnImport").onclick=function(){ $("importFile").click(); };
+  $("importFile").onchange=function(e){
+    var f=e.target.files && e.target.files[0];
+    importJSON(f);
+    $("importFile").value="";
   };
 
   function init(){
